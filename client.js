@@ -1,7 +1,6 @@
 var pressedKeys = {};
 var player;
 var gameInstance;
-var hooks = [];
 var oldclearRect;
 if (!window.oldFuncs) {
     window.oldFuncs = {}
@@ -14,16 +13,19 @@ window.addEventListener("keydown", function (e) {
 });
 
 function makeHook(name, prototype, funcName, hook) {
+    window.log("Hooking " + name);
     if (window.oldFuncs[name] == undefined) {
-        window.log("Hooking "+name);
         window.oldFuncs[name] = prototype[funcName]
     }
     if (prototype[funcName] != window.oldFuncs[name]) {
-        window.log("Hook "+name+" already exists ! rehooking...");
-        hooks[name] = prototype[funcName] = window.oldFuncs[name]
+        window.log("Hook " + name + " already exists ! rehooking...");
+        prototype[funcName] = window.oldFuncs[name]
     }
     //hook
-    hook(prototype, window.oldFuncs[name]);
+    hook(prototype, window.oldFuncs[name], () => {
+        window.log("Unhooking " + name);
+        prototype[funcName] = window.oldFuncs[name]
+    });
 }
 
 function getDistance(x1, y1, z1, x2, y2, z2) {
@@ -39,7 +41,7 @@ function scale(valueIn, baseMin, baseMax, limitMin, limitMax) {
 
 function getRotationsToEntity(entity) {
     var d4 = (entity.x) - localPlayer.x;
-    var d5 = (entity.y - entity.crouchVal * 3) - (localPlayer.y - 1);
+    var d5 = (entity.y + 0.5 - entity.crouchVal * 3) - (localPlayer.y + localPlayer.jumpBobY);
     var d6 = entity.z - localPlayer.z;
     var d7 = Math.sqrt(d4 * d4 + d6 * d6);
     var f = (Math.atan2(d6, d4) * 180.0 / Math.PI) - 90.0;
@@ -71,6 +73,19 @@ function getDirection(player) {
     }).yaw / 180.0 * Math.PI;
 }
 
+function world2Screen(ctx, position) {
+    let pos = position.clone();
+    let scaledWidth = windowWidth / 1;
+    let scaledHeight = windowHeight / 1;
+    pos.project(camera);
+    pos.x = (pos.x + 1) / 2;
+    pos.y = (-pos.y + 1) / 2;
+    pos.x *= scaledWidth;
+    pos.y *= scaledHeight;
+    return pos;
+
+}
+
 function getSpeed(player) {
     return Math.sqrt(player.velocity.x * player.velocity.x + player.velocity.z * player.velocity.z)
 }
@@ -84,12 +99,18 @@ function setSpeed(player, moveSpeed) {
  * @type {CanvasRenderingContext2D}
  */
 var ctx;
+var playerList;
+var context = this;
+var frustum;
+var camera;
+var windowWidth = 0;
+var windowHeight = 0;
 
 function aimbotmomento() {
-    window.log()
     var players = gameInstance.players.list;
     var bestDistance = 99999;
     let nearest = null;
+    playerList = players;
     players.forEach((player, index) => {
         if (!player.isYou) {
             player.cnBSeen = true;
@@ -101,41 +122,84 @@ function aimbotmomento() {
             bestDistance = dist;
         }
     })
-    if (nearest == null /*|| localPlayer.aimDir != 0*/) return;
+    if (nearest == null || localPlayer.aimDir != 0) return;
     var rotToNearest = normalRotationToKrunker(getRotationsToEntity(nearest));
     //['canSee'](window['spectating'] && Iïìíîíì['spect']['target'] ? Iïìíîíì['spect']['target'] : Iíïîîiî, Iíîïîïí['x'], Iíîïîïí['y'], Iíîïîïí['z'])
 
-    gameInstance.controls.pchObjc.rotation.x = rotToNearest.pitch - 0.02
+    gameInstance.controls.pchObjc.rotation.x = rotToNearest.pitch
     gameInstance.controls.object.rotation.y = rotToNearest.yaw
 
-    gameInstance.controls.pchObjc.rotation.x -= (localPlayer.recoilForce * 1)
+    gameInstance.controls.pchObjc.rotation.x -= (localPlayer.recoilForce * 10) + 0.05
 }
 
 function onUpdate() {
-        if (player == null || localPlayer != player) {
-            player = localPlayer;
+    if (player == null || localPlayer != player) {
+        player = localPlayer;
+        oneTimeHooks();
+    }
+    aimbotmomento()
+}
+
+function onRender2D(ctx) {
+    if (gameInstance == null || gameInstance.players == null) return
+
+    gameInstance.players.list.forEach(player => {
+        if (player.objInstances == null) return;
+        if (player.isYou) return
+
+        var pos = player.objInstances.position.clone();
+
+
+        pos.y += 6;
+        var playerPosOnScreen = world2Screen(ctx, pos)
+        ctx.beginPath();
+        ctx.moveTo(windowWidth / 2, windowHeight);
+        ctx.lineTo(playerPosOnScreen.x, playerPosOnScreen.y);
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = "#eb5656"
+        if (frustum.containsPoint(player.objInstances.position)) {
+            ctx.strokeStyle = "#0ef212"
         }
-        
-        aimbotmomento()
-    
+        ctx.stroke();
+    })
+
+}
+
+function oneTimeHooks() {
+    //camera
+    makeHook("project", Object.getPrototypeOf(localPlayer.objInstances.position), "project", (prototype, old, unhook) => {
+        prototype.project = function (...args) {
+            var ret = old.call(this, args[0])
+            camera = args[0]
+            unhook()
+            return ret;
+        }
+    })
+    //frustum
+    makeHook("frustum", gameInstance.THREE.Frustum.prototype, "intersectsObject", (prototype, old, unhook) => {
+        prototype.intersectsObject = function (...args) {
+            var ret = old.call(this, args[0])
+            frustum = this
+            return ret;
+        }
+    })
 }
 
 
 function run() {
-    window.onUpdate = onUpdate;
-// fillText(text: string, x: number, y: number, maxWidth?: number): void;
+    // fillText(text: string, x: number, y: number, maxWidth?: number): void;
     makeHook("clearRect", CanvasRenderingContext2D.prototype, "clearRect", (prototype, old) => {
         prototype.clearRect = function (...args) {
-            var ret =  old.call(this, args[0], args[1], args[2], args[3])
-           // window.log(this)
+            var ret = old.call(this, args[0], args[1], args[2], args[3])
+            try {
+                windowWidth = args[2]
+                windowHeight = args[3]
 
-            this.fillStyle = "black"
-            this.fillRect(400, 40, 1000,100)
-            this.stroke()
-            this.font = "30px Segoe UI";
-            this.fillStyle = "white"
-            this.fillText("Nigger Client", 500, 50);
-            this.beginPath();
+                onRender2D(this)
+
+            } catch (e) {
+                window.log(e)
+            }
             return ret;
         }
     })
@@ -148,14 +212,14 @@ function run() {
                         ctx = document.querySelector("canvas").getContext("2d");;
                         gameInstance = arguments.callee.caller.arguments[1];
                         localPlayer = gameInstance.tmpPlayer;
-                        window.onUpdate();
+                        onUpdate()
                     } catch (e) {
                         window.log(e)
                     }
-    
+
                 }
             }
-    
+
             return old.call(this, number);
         }
     })
